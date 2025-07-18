@@ -1,137 +1,119 @@
-import { GAME_CONFIG } from './gameConstants.js';
-import { physicsEngine } from '../components/GameArena/Physics.js';
+import { GAME_CONFIG } from './gameConstants';
 
-/**
- * Enhanced circle collision detection
- */
-export function checkCircleCollision(circle1, circle2) {
-  const dx = circle1.position.x - circle2.position.x;
-  const dy = circle1.position.y - circle2.position.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  const combinedRadius = (circle1.radius || GAME_CONFIG.PLAYER.RADIUS) + 
-                        (circle2.radius || GAME_CONFIG.PLAYER.RADIUS);
-  
-  return {
-    colliding: distance < combinedRadius,
-    distance,
-    overlap: Math.max(0, combinedRadius - distance),
-    normal: distance > 0 ? { x: dx / distance, y: dy / distance } : { x: 1, y: 0 }
-  };
-}
-
-/**
- * ENHANCED: Player collision with consistent physics for all scenarios
- */
-export function handlePlayerCollision(player1, player2) {
-  const collision = checkCircleCollision(player1, player2);
-  
-  if (!collision.colliding) {
-    return { player1, player2, collision: false };
-  }
-
-  // Create deep copies to avoid mutations
-  let updatedPlayer1 = { 
-    ...player1, 
-    position: { ...player1.position }, 
-    velocity: { ...player1.velocity } 
-  };
-  let updatedPlayer2 = { 
-    ...player2, 
-    position: { ...player2.position }, 
-    velocity: { ...player2.velocity } 
-  };
-
-  // 1. SMOOTH SEPARATION (same for all collision types)
-  const separationForce = collision.overlap * 0.52;
-  const separationX = collision.normal.x * separationForce;
-  const separationY = collision.normal.y * separationForce;
-
-  updatedPlayer1.position.x = player1.position.x + separationX;
-  updatedPlayer1.position.y = player1.position.y + separationY;
-  updatedPlayer2.position.x = player2.position.x - separationX;
-  updatedPlayer2.position.y = player2.position.y - separationY;
-
-  // 2. APPLY REALISTIC PHYSICS (same as border bouncing for ALL cases)
-  const physicsResult = physicsEngine.calculateElasticCollision(
-    updatedPlayer1, 
-    updatedPlayer2, 
-    collision.normal
-  );
-  
-  updatedPlayer1 = physicsResult.player1;
-  updatedPlayer2 = physicsResult.player2;
-
-  // 3. WEAPON LOGIC (affects health only, physics remain the same)
-  let weaponUsed = false;
-  let attacker = null;
-  let victim = null;
-  let bothHadWeapons = false;
-
-  if (player1.hasWeapon && player2.hasWeapon) {
-    // CASE: Both have weapons
-    // ✅ Same physics bounce + both weapons vanish + no health loss
-    updatedPlayer1.hasWeapon = false;
-    updatedPlayer2.hasWeapon = false;
-    weaponUsed = true;
-    bothHadWeapons = true;
-    
-    console.log(`🗡️⚔️ Both players had weapons - weapons cancelled! Same physics bounce applied.`);
-    
-  } else if (player1.hasWeapon && !player2.hasWeapon) {
-    // CASE: Player1 has weapon, Player2 doesn't
-    // ✅ Same physics bounce + Player2 loses health + weapon consumed
-    updatedPlayer2.health = Math.max(0, player2.health - 1);
-    updatedPlayer1.hasWeapon = false;
-    weaponUsed = true;
-    attacker = player1.id;
-    victim = player2.id;
-    
-    console.log(`🗡️ ${player1.name} (weapon) hit ${player2.name} - Health: ${updatedPlayer2.health}. Same physics bounce applied.`);
-    
-  } else if (!player1.hasWeapon && player2.hasWeapon) {
-    // CASE: Player2 has weapon, Player1 doesn't
-    // ✅ Same physics bounce + Player1 loses health + weapon consumed
-    updatedPlayer1.health = Math.max(0, player1.health - 1);
-    updatedPlayer2.hasWeapon = false;
-    weaponUsed = true;
-    attacker = player2.id;
-    victim = player1.id;
-    
-    console.log(`🗡️ ${player2.name} (weapon) hit ${player1.name} - Health: ${updatedPlayer1.health}. Same physics bounce applied.`);
-    
-  } else {
-    // CASE: Neither has weapon
-    // ✅ Same physics bounce + no health loss + no weapon changes
-    console.log(`🏀 ${player1.name} and ${player2.name} bounced normally - same physics as border bounce.`);
-  }
-
-  return {
-    player1: updatedPlayer1,
-    player2: updatedPlayer2,
-    collision: true,
-    weaponUsed,
-    attacker,
-    victim,
-    bothHadWeapons
-  };
-}
-
-/**
- * Enhanced boundary collision (for reference - same physics as player collisions)
- */
-export function checkBoundaryCollision(player) {
-  // This is handled in Physics.js now for consistency
-  return physicsEngine.handleBoundaryCollisions(player);
-}
-
-/**
- * Item collision detection (unchanged)
- */
-export function checkItemCollision(player, item) {
+export const checkItemCollision = (player, item) => {
   const dx = player.position.x - item.x;
   const dy = player.position.y - item.y;
   const distance = Math.sqrt(dx * dx + dy * dy);
-  const collisionRadius = GAME_CONFIG.PLAYER.RADIUS + (item.radius || 15);
+  const minDistance = player.radius + item.radius;
   
-  return distance < collisionRadius;
-}
+  return distance < minDistance;
+};
+
+// **Enhanced rock collision with gentler bouncing**
+export const handleRockCollision = (player, rock) => {
+  const dx = player.position.x - rock.x;
+  const dy = player.position.y - rock.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  
+  if (distance === 0) {
+    const randomAngle = Math.random() * Math.PI * 2;
+    dx = Math.cos(randomAngle);
+    dy = Math.sin(randomAngle);
+    distance = 1;
+  }
+  
+  const normalX = dx / distance;
+  const normalY = dy / distance;
+  
+  const overlap = (player.radius + rock.radius) - distance;
+  player.position.x += normalX * (overlap + 2);
+  player.position.y += normalY * (overlap + 2);
+  
+  // **Gentler bounce multiplier**
+  const bounceMultiplier = GAME_CONFIG.ITEMS.ROCK.BOUNCE_MULTIPLIER * 0.8; // **20% less aggressive**
+  
+  const velDotNormal = player.velocity.x * normalX + player.velocity.y * normalY;
+  
+  player.velocity.x = (player.velocity.x - 2 * velDotNormal * normalX) * bounceMultiplier;
+  player.velocity.y = (player.velocity.y - 2 * velDotNormal * normalY) * bounceMultiplier;
+  
+  // **Less randomness for more predictable bouncing**
+  const randomFactor = 0.3; // **Reduced from 0.5**
+  player.velocity.x += (Math.random() - 0.5) * randomFactor;
+  player.velocity.y += (Math.random() - 0.5) * randomFactor;
+  
+  const speed = Math.sqrt(player.velocity.x ** 2 + player.velocity.y ** 2);
+  if (speed > GAME_CONFIG.PHYSICS.MAX_SPEED) {
+    const scale = GAME_CONFIG.PHYSICS.MAX_SPEED / speed;
+    player.velocity.x *= scale;
+    player.velocity.y *= scale;
+  }
+  
+  console.log(`🌙🪨 ${player.name} gently bounced off rock! New velocity: (${player.velocity.x.toFixed(2)}, ${player.velocity.y.toFixed(2)})`);
+  
+  return player;
+};
+
+export const handlePlayerCollision = (player1, player2) => {
+  const dx = player1.position.x - player2.position.x;
+  const dy = player1.position.y - player2.position.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  const minDistance = player1.radius + player2.radius;
+
+  if (distance >= minDistance) {
+    return { collision: false, player1, player2 };
+  }
+
+  // **Gentle player separation**
+  const overlap = minDistance - distance;
+  const separationX = (dx / distance) * (overlap / 2);
+  const separationY = (dy / distance) * (overlap / 2);
+
+  player1.position.x += separationX;
+  player1.position.y += separationY;
+  player2.position.x -= separationX;
+  player2.position.y -= separationY;
+
+  // Handle weapon logic (same as before)
+  const player1HasWeapon = player1.hasWeapon;
+  const player2HasWeapon = player2.hasWeapon;
+  
+  let weaponUsed = false;
+  let bothHadWeapons = false;
+
+  if (player1HasWeapon && player2HasWeapon) {
+    player1.hasWeapon = false;
+    player2.hasWeapon = false;
+    weaponUsed = true;
+    bothHadWeapons = true;
+    console.log(`⚔️ Both players had weapons - weapons destroyed gently!`);
+  } else if (player1HasWeapon && !player2HasWeapon) {
+    player2.health = Math.max(0, player2.health - 1);
+    player1.hasWeapon = false;
+    weaponUsed = true;
+    console.log(`🌙🗡️ ${player1.name} gently damaged ${player2.name}! Health: ${player2.health}`);
+  } else if (player2HasWeapon && !player1HasWeapon) {
+    player1.health = Math.max(0, player1.health - 1);
+    player2.hasWeapon = false;
+    weaponUsed = true;
+    console.log(`🌙🗡️ ${player2.name} gently damaged ${player1.name}! Health: ${player1.health}`);
+  }
+
+  // **Much gentler velocity exchange**
+  const dampening = 0.5; // **Even more dampening**
+  const tempVx = player1.velocity.x;
+  const tempVy = player1.velocity.y;
+  
+  player1.velocity.x = player2.velocity.x * dampening;
+  player1.velocity.y = player2.velocity.y * dampening;
+  player2.velocity.x = tempVx * dampening;
+  player2.velocity.y = tempVy * dampening;
+
+  return {
+    collision: true,
+    player1,
+    player2,
+    weaponUsed,
+    bothHadWeapons
+  };
+};
