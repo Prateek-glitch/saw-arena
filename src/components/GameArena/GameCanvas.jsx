@@ -9,8 +9,7 @@ const GameCanvas = () => {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const animationFrameRef = useRef(null);
-  // REDUCED HEART SPAWN - from 0.04 to 0.015 (much less frequent)
-  const itemSpawnerRef = useRef(new ItemSpawner({ heartChance: 0.015 }));
+  const itemSpawnerRef = useRef(new ItemSpawner());
   const gameStartTimeRef = useRef(Date.now());
 
   const [collisionEffects, setCollisionEffects] = useState([]);
@@ -18,6 +17,8 @@ const GameCanvas = () => {
   const [fps, setFps] = useState(60);
   const [spawnNotifications, setSpawnNotifications] = useState([]);
   const [gameTimer, setGameTimer] = useState(90); // 1.5 minutes
+  const [gameEnded, setGameEnded] = useState(false);
+  const [winner, setWinner] = useState(null);
   const { state, dispatch } = useGame();
 
   // Image and texture caches
@@ -25,9 +26,33 @@ const GameCanvas = () => {
   const sawCache = useRef(null);
   const rockCache = useRef(new Map());
 
+  // Check for winner function
+  const checkForWinner = useCallback((players) => {
+    const alivePlayers = players.filter(p => p.health > 0);
+    
+    if (alivePlayers.length === 1 && players.length > 1) {
+      // Last player standing wins
+      const winner = alivePlayers[0];
+      setWinner(winner);
+      setGameEnded(true);
+      dispatch({ type: 'END_GAME', payload: winner });
+      console.log(`🏆 WINNER: ${winner.name} is the last player standing!`);
+      return true;
+    } else if (alivePlayers.length === 0 && players.length > 1) {
+      // All players died - draw
+      setWinner(null);
+      setGameEnded(true);
+      dispatch({ type: 'END_GAME', payload: null });
+      console.log('💀 DRAW: All players eliminated!');
+      return true;
+    }
+    
+    return false;
+  }, [dispatch]);
+
   // Game timer and auto-end
   useEffect(() => {
-    if (state.gameState === 'playing') {
+    if (state.gameState === 'playing' && !gameEnded) {
       gameStartTimeRef.current = Date.now();
 
       const timerInterval = setInterval(() => {
@@ -35,16 +60,28 @@ const GameCanvas = () => {
         const remaining = Math.max(0, GAME_CONFIG.GAME_TIMING.MAX_GAME_DURATION - elapsed);
         setGameTimer(Math.ceil(remaining / 1000));
 
-        if (remaining <= 0) {
+        // Time's up - determine winner by health
+        if (remaining <= 0 && !gameEnded) {
           const alivePlayers = state.players.filter(p => p.health > 0);
           if (alivePlayers.length > 0) {
-            dispatch({ type: 'END_GAME', payload: alivePlayers[0] });
+            // Find player with highest health
+            const winner = alivePlayers.reduce((prev, current) => 
+              (prev.health > current.health) ? prev : current
+            );
+            setWinner(winner);
+            setGameEnded(true);
+            dispatch({ type: 'END_GAME', payload: winner });
+            console.log(`⏰ TIME UP! Winner by health: ${winner.name} (${winner.health} HP)`);
           } else {
+            setWinner(null);
+            setGameEnded(true);
             dispatch({ type: 'END_GAME', payload: null });
+            console.log('⏰ TIME UP! No survivors - Draw!');
           }
           clearInterval(timerInterval);
         }
 
+        // Weapon blitz in final 30 seconds
         if (remaining <= 30000 && remaining > 29000) {
           itemSpawnerRef.current.weaponBlitz();
         }
@@ -52,7 +89,7 @@ const GameCanvas = () => {
 
       return () => clearInterval(timerInterval);
     }
-  }, [state.gameState, state.players, dispatch]);
+  }, [state.gameState, state.players, dispatch, gameEnded, checkForWinner]);
 
   const addSpawnNotification = useCallback((type, x, y, count = 1) => {
     const notification = {
@@ -68,23 +105,23 @@ const GameCanvas = () => {
   }, []);
 
   useEffect(() => {
-    if (state.gameState === 'playing' && state.players.length > 0) {
+    if (state.gameState === 'playing' && state.players.length > 0 && !gameEnded) {
       setTimeout(() => {
         itemSpawnerRef.current.forceSpawnAll();
       }, 200);
 
       const blitzInterval = setInterval(() => {
-        if (state.gameState === 'playing') {
+        if (state.gameState === 'playing' && !gameEnded) {
           itemSpawnerRef.current.weaponBlitz();
         }
       }, 20000);
 
       return () => clearInterval(blitzInterval);
     }
-  }, [state.gameState, state.players.length]);
+  }, [state.gameState, state.players.length, gameEnded]);
 
   useEffect(() => {
-    if (state.players.length > 0) {
+    if (state.players.length > 0 && !gameEnded) {
       const updatedPlayers = state.players.map(player => {
         if (!player.velocity || (Math.abs(player.velocity.x) < 0.4 && Math.abs(player.velocity.y) < 0.4)) {
           const angle = Math.random() * Math.PI * 2;
@@ -102,7 +139,7 @@ const GameCanvas = () => {
 
       dispatch({ type: 'UPDATE_PLAYERS', payload: updatedPlayers });
     }
-  }, [state.players.length, dispatch]);
+  }, [state.players.length, dispatch, gameEnded]);
 
   const drawGameTimer = useCallback((ctx) => {
     const minutes = Math.floor(gameTimer / 60);
@@ -132,6 +169,52 @@ const GameCanvas = () => {
       ctx.fillText('FINISHING!', GAME_CONFIG.ARENA.WIDTH / 2, 40);
     }
   }, [gameTimer]);
+
+  // Draw winner overlay
+  const drawWinnerOverlay = useCallback((ctx) => {
+    if (!gameEnded) return;
+
+    // Semi-transparent overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(0, 0, GAME_CONFIG.ARENA.WIDTH, GAME_CONFIG.ARENA.HEIGHT);
+
+    // Winner announcement
+    if (winner) {
+      ctx.fillStyle = winner.color;
+      ctx.font = 'bold 48px Arial';
+      ctx.textAlign = 'center';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 4;
+      ctx.strokeText('WINNER!', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 - 40);
+      ctx.fillText('WINNER!', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 - 40);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 32px Arial';
+      ctx.strokeText(winner.name, GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 + 20);
+      ctx.fillText(winner.name, GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 + 20);
+
+      ctx.fillStyle = '#ffff00';
+      ctx.font = 'bold 20px Arial';
+      ctx.fillText(`Health: ${winner.health}/${GAME_CONFIG.PLAYER.MAX_HEALTH}`, GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 + 60);
+    } else {
+      ctx.fillStyle = '#ff0000';
+      ctx.font = 'bold 48px Arial';
+      ctx.textAlign = 'center';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 4;
+      ctx.strokeText('DRAW!', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 - 20);
+      ctx.fillText('DRAW!', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 - 20);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 24px Arial';
+      ctx.fillText('No survivors!', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 + 30);
+    }
+
+    // Play again hint
+    ctx.fillStyle = '#cccccc';
+    ctx.font = 'bold 16px Arial';
+    ctx.fillText('Game Over', GAME_CONFIG.ARENA.WIDTH / 2, GAME_CONFIG.ARENA.HEIGHT / 2 + 100);
+  }, [gameEnded, winner]);
 
   const createRockTexture = useCallback((color, rockType, radius) => {
     const cacheKey = `${color}_${rockType}_${radius}`;
@@ -329,7 +412,7 @@ const GameCanvas = () => {
   }, []);
 
   const updateGame = useCallback(() => {
-    if (!state.players.length) return;
+    if (!state.players.length || gameEnded) return;
 
     try {
       let updatedPlayers = state.players.map(player => {
@@ -350,6 +433,14 @@ const GameCanvas = () => {
               const centerX = (player1.position.x + player2.position.x) / 2;
               const centerY = (player1.position.y + player2.position.y) / 2;
               addCollisionEffect(centerX, centerY, result.weaponUsed ? 'hit' : 'bounce');
+              
+              // Check if any player died from collision
+              if (result.player1.health <= 0) {
+                console.log(`💀 ${result.player1.name} eliminated by ${result.player2.name}!`);
+              }
+              if (result.player2.health <= 0) {
+                console.log(`💀 ${result.player2.name} eliminated by ${result.player1.name}!`);
+              }
               break;
             }
           }
@@ -378,13 +469,14 @@ const GameCanvas = () => {
                 health: Math.min(GAME_CONFIG.PLAYER.MAX_HEALTH, player.health + 1)
               };
               addCollisionEffect(item.x, item.y, 'heal');
-              console.log(`💖 ${player.name} found a rare heart! Health: ${updatedPlayers[playerIndex].health}`);
+              console.log(`💎 ${player.name} found a RARE heart! Health: ${updatedPlayers[playerIndex].health}`);
             } else if (item.type === ITEM_TYPES.WEAPON) {
               updatedPlayers[playerIndex] = {
                 ...updatedPlayers[playerIndex],
                 hasWeapon: true
               };
               addCollisionEffect(item.x, item.y, 'weapon');
+              console.log(`🪚 ${player.name} got a weapon!`);
             } else if (item.type === ITEM_TYPES.ROCK) {
               updatedPlayers[playerIndex] = handleRockCollision(updatedPlayers[playerIndex], item);
               addCollisionEffect(item.x, item.y, 'rockBounce');
@@ -395,16 +487,16 @@ const GameCanvas = () => {
         }
       });
 
-      const alivePlayers = updatedPlayers.filter(p => p.health > 0);
-      if (alivePlayers.length <= 1 && updatedPlayers.length > 1) {
-        dispatch({ type: 'END_GAME', payload: alivePlayers[0] || null });
+      // Check for winner after all updates
+      if (!checkForWinner(updatedPlayers)) {
+        dispatch({ type: 'UPDATE_PLAYERS', payload: updatedPlayers });
+        dispatch({ type: 'UPDATE_ITEMS', payload: itemSpawnerRef.current.getItems() });
       }
 
-      dispatch({ type: 'UPDATE_PLAYERS', payload: updatedPlayers });
-      dispatch({ type: 'UPDATE_ITEMS', payload: itemSpawnerRef.current.getItems() });
-
-    } catch (error) {}
-  }, [state.players, state.items.length, dispatch, addCollisionEffect, addSpawnNotification]);
+    } catch (error) {
+      console.error('Game update error:', error);
+    }
+  }, [state.players, state.items.length, dispatch, addCollisionEffect, addSpawnNotification, gameEnded, checkForWinner]);
 
   const drawCircularSaw = useCallback((ctx, x, y, rotation, alpha = 1, size = 1) => {
     if (!sawCache.current) return;
@@ -432,22 +524,30 @@ const GameCanvas = () => {
     ctx.lineWidth = 3;
     ctx.strokeRect(2, 2, GAME_CONFIG.ARENA.WIDTH - 4, GAME_CONFIG.ARENA.HEIGHT - 4);
 
-    drawGameTimer(ctx);
+    if (!gameEnded) {
+      drawGameTimer(ctx);
+    }
 
     ctx.fillStyle = '#666666';
     ctx.font = '8px Arial';
     ctx.textAlign = 'right';
     ctx.fillText('by Prateek-glitch', GAME_CONFIG.ARENA.WIDTH - 5, GAME_CONFIG.ARENA.HEIGHT - 5);
 
-    // Draw item count with "RARE" indicator for hearts
+    // Show players remaining
+    const alivePlayers = state.players.filter(p => p.health > 0);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 12px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Players: ${alivePlayers.length}/${state.players.length}`, 10, 25);
+
+    // Draw item count
     const heartCount = state.items.filter(item => item.type === ITEM_TYPES.HEART).length;
     const weaponCount = state.items.filter(item => item.type === ITEM_TYPES.WEAPON).length;
     const rockCount = state.items.filter(item => item.type === ITEM_TYPES.ROCK).length;
 
     ctx.fillStyle = '#ffffff';
     ctx.font = '10px Arial';
-    ctx.textAlign = 'left';
-    ctx.fillText(`💖${heartCount}(RARE) 🪚${weaponCount} 🪨${rockCount}`, 10, 40);
+    ctx.fillText(`💎${heartCount}(RARE) 🪚${weaponCount} 🪨${rockCount}`, 10, 40);
 
     // Draw items
     state.items.forEach(item => {
@@ -471,25 +571,29 @@ const GameCanvas = () => {
       }
     });
 
-    // Draw players (WITHOUT health bars above them)
+    // Draw players
     state.players.forEach(player => {
-      if (player.health <= 0) return;
-
       const { x, y } = player.position;
       const radius = GAME_CONFIG.PLAYER.RADIUS;
 
       // Draw player circle with colored border
       if (imageCache.current.has(player.id)) {
         const img = imageCache.current.get(player.id);
+        // Dim dead players
+        if (player.health <= 0) {
+          ctx.globalAlpha = 0.3;
+        }
         ctx.drawImage(img, x - radius, y - radius);
+        ctx.globalAlpha = 1;
+        
         // Add colored border around profile image
-        ctx.strokeStyle = player.color;
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = player.health > 0 ? player.color : '#666666';
+        ctx.lineWidth = player.health > 0 ? 3 : 1;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        ctx.fillStyle = player.color;
+        ctx.fillStyle = player.health > 0 ? player.color : '#666666';
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
@@ -498,22 +602,23 @@ const GameCanvas = () => {
         ctx.stroke();
       }
 
-      // Draw weapon indicator
-      if (player.hasWeapon) {
+      // Draw weapon indicator (only for alive players)
+      if (player.hasWeapon && player.health > 0) {
         ctx.fillStyle = '#ffff00';
         ctx.beginPath();
         ctx.arc(x + radius - 5, y - radius + 5, 3, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Draw player name (but NO health bar)
-      ctx.fillStyle = '#ffffff';
+      // Draw player name with status
+      ctx.fillStyle = player.health > 0 ? '#ffffff' : '#666666';
       ctx.font = 'bold 10px Arial';
       ctx.textAlign = 'center';
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = 2;
-      ctx.strokeText(player.name, x, y + radius + 15);
-      ctx.fillText(player.name, x, y + radius + 15);
+      const displayName = player.health > 0 ? player.name : `${player.name} ☠️`;
+      ctx.strokeText(displayName, x, y + radius + 15);
+      ctx.fillText(displayName, x, y + radius + 15);
     });
 
     // Draw collision effects
@@ -587,7 +692,10 @@ const GameCanvas = () => {
       ctx.globalAlpha = 1;
       return updated;
     });
-  }, [state.players, state.items, drawCircularSaw, createRockTexture, drawGameTimer]);
+
+    // Draw winner overlay
+    drawWinnerOverlay(ctx);
+  }, [state.players, state.items, drawCircularSaw, createRockTexture, drawGameTimer, drawWinnerOverlay, gameEnded]);
 
   useEffect(() => {
     let frameCount = 0;
@@ -608,14 +716,16 @@ const GameCanvas = () => {
       animationFrameRef.current = requestAnimationFrame(gameLoop);
     };
 
-    gameLoop();
+    if (!gameEnded) {
+      gameLoop();
+    }
 
     return () => {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [updateGame, render]);
+  }, [updateGame, render, gameEnded]);
 
   return (
     <div className="w-full min-h-screen flex items-center justify-center bg-gray-800">
@@ -628,13 +738,15 @@ const GameCanvas = () => {
           paddingBottom: '40px'
         }}
       >
-        {/* Health bar rows ABOVE the arena - matching the image layout */}
+        {/* Health bar rows ABOVE the arena */}
         <div className="flex flex-col items-center w-full mb-6 gap-3">
           {state.players.map((player, idx) => (
             <div key={player.id || idx} className="flex flex-col items-center">
-              {/* Player name */}
-              <div className="text-white text-sm font-medium mb-2">
-                {player.name}
+              {/* Player name with status */}
+              <div 
+                className={`text-sm font-medium mb-2 ${player.health > 0 ? 'text-white' : 'text-gray-500'}`}
+              >
+                {player.health > 0 ? player.name : `${player.name} ☠️`}
               </div>
               {/* Health segments */}
               <div className="flex flex-row gap-1">
@@ -644,7 +756,8 @@ const GameCanvas = () => {
                     className="w-16 h-4 rounded-sm"
                     style={{
                       backgroundColor: i < player.health ? player.color : '#444444',
-                      border: `1px solid ${player.color}`
+                      border: `1px solid ${player.health > 0 ? player.color : '#666666'}`,
+                      opacity: player.health > 0 ? 1 : 0.5
                     }}
                   />
                 ))}
@@ -653,7 +766,7 @@ const GameCanvas = () => {
           ))}
         </div>
 
-        {/* Arena with yellow border like in the image */}
+        {/* Arena */}
         <div
           className="relative mb-4"
           style={{
@@ -674,6 +787,37 @@ const GameCanvas = () => {
             }}
           />
         </div>
+
+        {/* Game status panel */}
+        {gameEnded && (
+          <div className="mt-4 px-8 py-6 rounded-2xl bg-gray-900 border border-gray-600 flex flex-col items-center max-w-md w-full">
+            {winner ? (
+              <>
+                <p className="font-bold text-2xl mb-2" style={{color: winner.color}}>
+                  🏆 {winner.name} WINS!
+                </p>
+                <p className="text-white text-sm">
+                  Last player standing with {winner.health} health
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-bold text-2xl text-red-500 mb-2">
+                  💀 DRAW!
+                </p>
+                <p className="text-white text-sm">
+                  No survivors
+                </p>
+              </>
+            )}
+            <button
+              className="mt-4 px-6 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+              onClick={() => window.location.reload()}
+            >
+              Play Again
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
